@@ -1,19 +1,25 @@
-## EEL7415/7515 - IoT LoRa
+## FreeRTOS project for 01320
 
 This branch contains the software presented ...
 
 #### Folders structure
 
-    ├── Bin                   # Binary files.
-    ├── Docs                  # Boards usefull files.
-    ├── Drivers               # Sensors and HAL drivers.
-    ├── Middlewares           # LoRaWAN stack.
-    ├── Projects              # Main source code and Makefile
+    ├── Docs              # Documents for presentation.
+    ├── FreeRTOS          # Contains the FreeRTOS real time kernel source files.
+    ├── FreeRTOS-Plus     # Contains FreeRTOS+ components.
+    ├── tools             # FreeRTOS complementary files.
+    ├── Applications      # Main source code and Makefile.
+            |
+            +- MyApp
+                |
+                +- src      # source code
+                +- inc      # includes
+                -- Makefile # paths to files to be compiled, linked and generated
     └── ...
 
 #### Prerequisites
 
-The tests were performed in a Linux machine with Ubuntu version 20.04.2 LTS
+The tests were performed in a Linux machine with Ubuntu version 20.04.2 LTS.
 
 * **GCC**
 
@@ -53,9 +59,16 @@ Execute the following command:
 $ ./build/my_app
 ```
 
+Expected output:
+
+```sh
+AAAAAH
+```
+
 #### Updating the code
 
 The most relevant files are:
 
-* Application/My_App/src/**main.c**: project main application.
-* Application/My_App/**Makefile**: contains the paths to files to be compiled and generated.
+* Application/My_App/src/**main_app.c**: project main application.
+* Application/My_App/inc/**FreeRTOSConfig.h**: FreeRTOS configuration file.
+* Application/My_App/**Makefile**: contains the paths to files to be compiled, linked and generated.
