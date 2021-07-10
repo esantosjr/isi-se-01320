@@ -24,13 +24,13 @@ static void prvProcessing(void *pvParameters);
 static void prvStats(void *pvParameters);
 
 #define PI 3.141592
-#define BUFFER_SIZE 100
+#define BUFFER_SIZE 1000
 
 /* Task Priorities */
 #define prioADCRead         (tskIDLE_PRIORITY + 4) // High Priority
 #define prioProcessing      (tskIDLE_PRIORITY + 3) // Low Priority
 #define prioSerialInterface (tskIDLE_PRIORITY + 3) // Low Priority
-#define prioStats           (tskIDLE_PRIORITY + 2) // Low Priority
+#define prioStats           (tskIDLE_PRIORITY + 3) // Low Priority
 
 /* Some definitions */
 #define pdTICKS_TO_MS( xTicks ) ( ( xTicks * 1000 ) / configTICK_RATE_HZ )
@@ -48,6 +48,7 @@ TaskHandle_t xHandleSerialInterface = NULL;
 TaskHandle_t xHandleStats = NULL;
 
 float processed_adc_values[BUFFER_SIZE];
+uint32_t proc_current_position = 0;
 
 int main_app()
 {
@@ -67,7 +68,8 @@ int main_app()
     {
         console_print("Failed on create queue (memory), the program has stopped. Ctrl + C to finish. \n"); 
         for (;;);
-    } else
+    } 
+    else
     {
         /* Setting name to Queue */
         vQueueAddToRegistry( xQueue, "Queue-01" );
@@ -125,20 +127,26 @@ static void prvADCRead(void *pvParameters)
     uint8_t raw_adc_values[BUFFER_SIZE];
     uint32_t raw_current_position = 0;
 
-    xQueue = (QueueHandle_t) pvParameters; // Restoring xQueue from higher context. 
+    /* Restoring xQueue from higher context. */
+    xQueue = (QueueHandle_t) pvParameters;
 
     /* Checking parameter passed to task */
     configASSERT(xQueue != NULL);
 
+    /* Inform tasks information */
     console_print("\n******* %s STATS *******", pcTaskGetName(xHandleADCRead));
     console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleADCRead));
     console_print("\n Queue Name: %s", pcQueueGetName(xQueue));
     console_print("\n Queue Space Used: %d", uxQueueMessagesWaiting(xQueue));
     console_print("\n Queue Space Avaliable: %d", uxQueueSpacesAvailable(xQueue));
-    console_print("\n******************************\n\n");
+    console_print("\n******************************\n");
 
     for (;;)
-    {
+    {   
+        /* Gets time since last execution */
+        xLastWakeTime = xTaskGetTickCount();
+
+        /* Executes every 1 ms */
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
         /*
         console_print("\n\n");
@@ -155,11 +163,17 @@ static void prvADCRead(void *pvParameters)
         */
 
         /* Send the message */
-        if(xQueueSend(xQueue, ( void * ) &raw_adc_values, pdMS_TO_TICKS(0)) == pdTRUE && raw_current_position < BUFFER_SIZE){
+        if(xQueueSend(xQueue, ( void * ) &raw_adc_values, pdMS_TO_TICKS(0)) == pdTRUE && raw_current_position < BUFFER_SIZE)
+        {
+            /* Increments current vector position thus the next reading does not overwrite information */
             raw_current_position++;
         } else {
-            console_print("\n-ADC vector is full-\n");            
+            console_print("\n-ADC vector is full-\n");
+
+            /* Suspend current task. No new ADC information is read until users types "zerar" */
             vTaskSuspend( xHandleADCRead );
+
+            /* Deinit current position */
             raw_current_position = 0;
         }
     }
@@ -173,23 +187,27 @@ static void prvProcessing(void *pvParameters)
     /* Queue variables */
     QueueHandle_t xQueue = NULL;
     uint8_t received_adc_values[BUFFER_SIZE];
-    uint32_t proc_current_position = 0;
         
-    xQueue = (QueueHandle_t) pvParameters; // Restoring xQueue from higher context.
+    /* Restoring xQueue from higher context. */
+    xQueue = (QueueHandle_t) pvParameters;
         
     /* Checking parameter passed to  task */
     configASSERT(xQueue != NULL);
 
+    /* Inform tasks information */
     console_print("\n******* %s STATS *******", pcTaskGetName(xHandleProcessing));
     console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleProcessing));
     console_print("\n Queue Name: %s", pcQueueGetName(xQueue));
     console_print("\n Queue Space Used: %d", uxQueueMessagesWaiting(xQueue));
     console_print("\n Queue Space Avaliable: %d", uxQueueSpacesAvailable(xQueue));
-    console_print("\n******************************\n\n");
+    console_print("\n******************************\n");
 
     for (;;)
     {
+        /* Gets time since last execution */
         xLastWakeTime = xTaskGetTickCount();
+
+        /* Executes every 100 ms */
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
 
         /*
@@ -209,7 +227,10 @@ static void prvProcessing(void *pvParameters)
             proc_current_position++;
         } else {
             console_print("-All ADC values were processed- ");
+            /* Back to initial position */ 
             proc_current_position = 0;
+
+            /* Suspend current task. No new ADC information is processed until users types "zerar" */
             vTaskSuspend( xHandleProcessing );
         }
     }
@@ -223,36 +244,45 @@ void prvSerialInterface(void *pvParameters)
 
     console_print("\n******* %s STATS *******", pcTaskGetName(xHandleSerialInterface));
     console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleSerialInterface));
-    console_print("\n******************************\n\n");
+    console_print("\n******************************\n");
 
     for (;;) 
     {
-
-        xLastWakeTime = xTaskGetTickCount();
+        /* Polling serial interface to check if user insert some information */
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
 
+        /* Read serial interface */
         gets( msg );
 
+        /* Verify if some command from the pre-defined protocol was written */
         if(strcmp(msg,"obter") == 0) 
         {
+            /* print current ADC processed values */
             console_print("[ ");
 
             for(int loop = 0; loop < BUFFER_SIZE; loop++)
               console_print("%.2f ", processed_adc_values[loop]);
 
             console_print("]\n\n");
+
+            /* Deinit information read from serial interface */
             memset(msg, 0, sizeof(msg));
         }
         else if (strcmp(msg,"zerar") == 0) 
         {
+            /* Deinit ADC reading and processing tasks */
             vTaskSuspend( xHandleADCRead );
             vTaskResume( xHandleADCRead );
 
             vTaskSuspend( xHandleProcessing );
             vTaskResume( xHandleProcessing );
-
+            
+            /* Deinit information read from serial interface */
             memset(msg, 0, sizeof(msg));
+            /* Deinit processed values vector */
             memset(processed_adc_values, 0, sizeof(processed_adc_values));
+            /* Back to initial position */
+            proc_current_position = 0;
         }
     }
 }
@@ -262,7 +292,6 @@ void prvStats(void *pvParameters)
     char msg[256];
     TickType_t xLastWakeTime;
     const TickType_t xFrequency = pTaskStats;
-    xLastWakeTime = xTaskGetTickCount();
 
     console_print("\n******* %s STATS *******", pcTaskGetName(xHandleStats));
     console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleStats));
@@ -270,8 +299,10 @@ void prvStats(void *pvParameters)
  
     for (;;) 
     {
+        /* Print process consumption every 3 seconds */
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
         vTaskGetRunTimeStats( ( char * ) msg );
-        // console_print("\n\nStats: %s\n", msg);
+        console_print("\n\nvTaskGetRunTimeStats INFO: \n%s\n", msg);
     }
 }
