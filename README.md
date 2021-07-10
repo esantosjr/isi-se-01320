@@ -10,7 +10,7 @@ This branch contains the software presented ...
     ├── tools             # FreeRTOS complementary files.
     ├── Applications      # Main source code and Makefile.
             |
-            +- MyApp
+            +- MainApp
                 |
                 +- src      # source code
                 +- inc      # includes
@@ -40,7 +40,7 @@ GNU Make 4.2.1
 Go to the folder that contains the Makefile file:
 
 ```sh
-$ cd Applications/MyApp/
+$ cd Applications/MainApp/
 ```
 
 To compile:
@@ -56,7 +56,7 @@ The binary file will be located in a folder named ```build```. To clean the buil
 Execute the following command:
 
 ```sh
-$ ./build/my_app
+$ ./build/main_app
 ```
 
 Expected output:

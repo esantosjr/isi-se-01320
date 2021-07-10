@@ -1,5 +1,5 @@
 CC := gcc
-BIN := my_app
+BIN := main_app
 
 BUILD_DIR := build
 
