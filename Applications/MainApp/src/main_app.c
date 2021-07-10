@@ -4,259 +4,274 @@
  * Author: Elço João dos Santos Junior
  */
 
-#include <stdio.h>
-#include <pthread.h>
+/*Libs to generate random includes*/
+#include <stdio.h> 
+#include <stdlib.h> 
+#include <time.h> 
 
-/* Kernel includes. */
+/* Microkernel includes */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "timers.h"
 #include "semphr.h"
-
-/* Local includes. */
 #include "console.h"
+#include "queue.h"
 
-/* Priorities at which the tasks are created. */
-#define mainQUEUE_RECEIVE_TASK_PRIORITY     ( tskIDLE_PRIORITY + 2 )
-#define mainQUEUE_SEND_TASK_PRIORITY        ( tskIDLE_PRIORITY + 1 )
+/* Task prototypes */
+static void prvADCRead(void *pvParameters);
+static void prvSerialInterface(void *pvParameters);
+static void prvProcessing(void *pvParameters);
+static void prvStats(void *pvParameters);
 
-/* The rate at which data is sent to the queue.  The times are converted from
-milliseconds to ticks using the pdMS_TO_TICKS() macro. */
-#define mainTASK_SEND_FREQUENCY_MS          pdMS_TO_TICKS( 200UL )
-#define mainTIMER_SEND_FREQUENCY_MS         pdMS_TO_TICKS( 2000UL )
+#define PI 3.141592
+#define BUFFER_SIZE 100
 
-/* The number of items the queue can hold at once. */
-#define mainQUEUE_LENGTH                    ( 2 )
+/* Task Priorities */
+#define prioADCRead         (tskIDLE_PRIORITY + 4) // High Priority
+#define prioProcessing      (tskIDLE_PRIORITY + 3) // Low Priority
+#define prioSerialInterface (tskIDLE_PRIORITY + 3) // Low Priority
+#define prioStats           (tskIDLE_PRIORITY + 2) // Low Priority
 
-/* The values sent to the queue receive task from the queue send task and the
-queue send software timer respectively. */
-#define mainVALUE_SENT_FROM_TASK            ( 100UL )
-#define mainVALUE_SENT_FROM_TIMER           ( 200UL )
+/* Some definitions */
+#define pdTICKS_TO_MS( xTicks ) ( ( xTicks * 1000 ) / configTICK_RATE_HZ )
 
-/*-----------------------------------------------------------*/
+/* Define if tasks are periodic */
+#define pTaskADCRead pdMS_TO_TICKS(1);
+#define pTaskADCProc pdMS_TO_TICKS(100);
+#define pTaskStats   pdMS_TO_TICKS(3000);
+#define pTaskSerialInterface pdMS_TO_TICKS(1);
 
-/*
- * The tasks as described in the comments at the top of this file.
- */
-static void prvQueueReceiveTask( void *pvParameters );
-static void prvQueueSendTask( void *pvParameters );
+/* Handle for Tasks (optional for Linux) */
+TaskHandle_t xHandleADCRead = NULL;
+TaskHandle_t xHandleProcessing = NULL;
+TaskHandle_t xHandleSerialInterface = NULL;
+TaskHandle_t xHandleStats = NULL;
 
-/*
- * The callback function executed when the software timer expires.
- */
-static void prvQueueSendTimerCallback( TimerHandle_t xTimerHandle );
-
-/*-----------------------------------------------------------*/
-
-/* The queue used by both tasks. */
-static QueueHandle_t xQueue = NULL;
-
-/* A software timer that is started from the tick hook. */
-static TimerHandle_t xTimer = NULL;
-
-/*-----------------------------------------------------------*/
-
-/*** SEE THE COMMENTS AT THE TOP OF THIS FILE ***/
-void main_app( void )
-{
-    const TickType_t xTimerPeriod = mainTIMER_SEND_FREQUENCY_MS;
-
-    /* Create the queue. */
-    xQueue = xQueueCreate( mainQUEUE_LENGTH, sizeof( uint32_t ) );
-
-    if( xQueue != NULL )
-    {
-        /* Start the two tasks as described in the comments at the top of this
-        file. */
-        xTaskCreate( prvQueueReceiveTask,           /* The function that implements the task. */
-                    "Rx",                           /* The text name assigned to the task - for debug only as it is not used by the kernel. */
-                    configMINIMAL_STACK_SIZE,       /* The size of the stack to allocate to the task. */
-                    NULL,                           /* The parameter passed to the task - not used in this simple case. */
-                    mainQUEUE_RECEIVE_TASK_PRIORITY,/* The priority assigned to the task. */
-                    NULL );                         /* The task handle is not required, so NULL is passed. */
-
-        xTaskCreate( prvQueueSendTask, "TX", configMINIMAL_STACK_SIZE, NULL, mainQUEUE_SEND_TASK_PRIORITY, NULL );
-
-        /* Create the software timer, but don't start it yet. */
-        xTimer = xTimerCreate( "Timer",             /* The text name assigned to the software timer - for debug only as it is not used by the kernel. */
-                                xTimerPeriod,       /* The period of the software timer in ticks. */
-                                pdTRUE,             /* xAutoReload is set to pdTRUE. */
-                                NULL,               /* The timer's ID is not used. */
-                                prvQueueSendTimerCallback );/* The function executed when the timer expires. */
-
-        if( xTimer != NULL )
-        {
-            xTimerStart( xTimer, 0 );
-        }
-
-        /* Start the tasks and timer running. */
-        vTaskStartScheduler();
-    }
-
-    /* If all is well, the scheduler will now be running, and the following
-    line will never be reached.  If the following line does execute, then
-    there was insufficient FreeRTOS heap memory available for the idle and/or
-    timer tasks to be created.  See the memory management section on the
-    FreeRTOS web site for more details. */
-    for( ;; );
-}
-/*-----------------------------------------------------------*/
-
-static void prvQueueSendTask( void *pvParameters )
-{
-    TickType_t xNextWakeTime;
-    const TickType_t xBlockTime = mainTASK_SEND_FREQUENCY_MS;
-    const uint32_t ulValueToSend = mainVALUE_SENT_FROM_TASK;
-
-    /* Prevent the compiler warning about the unused parameter. */
-    ( void ) pvParameters;
-
-    /* Initialise xNextWakeTime - this only needs to be done once. */
-    xNextWakeTime = xTaskGetTickCount();
-
-    for( ;; )
-    {
-        /* Place this task in the blocked state until it is time to run again.
-        The block time is specified in ticks, pdMS_TO_TICKS() was used to
-        convert a time specified in milliseconds into a time specified in ticks.
-        While in the Blocked state this task will not consume any CPU time. */
-        vTaskDelayUntil( &xNextWakeTime, xBlockTime );
-
-        /* Send to the queue - causing the queue receive task to unblock and
-        write to the console.  0 is used as the block time so the send operation
-        will not block - it shouldn't need to block as the queue should always
-        have at least one space at this point in the code. */
-        xQueueSend( xQueue, &ulValueToSend, 0U );
-    }
-}
-/*-----------------------------------------------------------*/
-
-static void prvQueueSendTimerCallback( TimerHandle_t xTimerHandle )
-{
-    const uint32_t ulValueToSend = mainVALUE_SENT_FROM_TIMER;
-
-    /* This is the software timer callback function.  The software timer has a
-    period of two seconds and is reset each time a key is pressed.  This
-    callback function will execute if the timer expires, which will only happen
-    if a key is not pressed for two seconds. */
-
-    /* Avoid compiler warnings resulting from the unused parameter. */
-    ( void ) xTimerHandle;
-
-    /* Send to the queue - causing the queue receive task to unblock and
-    write out a message.  This function is called from the timer/daemon task, so
-    must not block.  Hence the block time is set to 0 ticks. To wait 
-    indefinitely, use portMAX_DELAY. return != pdPASS --> failed to send */
-    xQueueSend( xQueue, &ulValueToSend, 0U );
-
-    /* xQueueOverwrite --> escreve na fila mesmo que ela esteja cheia                    
-                           sobreescreve o valor na última posição */
-
-    /* uxQueueSpacesAvailable --> retorno o nº de espaços livres na fila */ 
-    /* apagar fila, deletar conteúdo, verificar armazenamento etc */
-
-}
-/*-----------------------------------------------------------*/
-
-static void prvQueueReceiveTask( void *pvParameters )
-{
-    uint32_t ulReceivedValue;
-
-    /* Prevent the compiler warning about the unused parameter. */
-    ( void ) pvParameters;
-
-    for( ;; )
-    {
-        /* Wait until something arrives in the queue - this task will block
-        indefinitely provided INCLUDE_vTaskSuspend is set to 1 in
-        FreeRTOSConfig.h.  It will not use any CPU time while it is in the
-        Blocked state. */
-        xQueueReceive( xQueue, &ulReceivedValue, portMAX_DELAY );
-
-        /* To get here something must have been received from the queue, but
-        is it an expected value?  Normally calling printf() from a task is not
-        a good idea.  Here there is lots of stack space and only one task is
-        using console IO so it is ok.  However, note the comments at the top of
-        this file about the risks of making Linux system calls (such as
-        console output) from a FreeRTOS task. */
-        if( ulReceivedValue == mainVALUE_SENT_FROM_TASK )
-        {
-            console_print( "Message received from task\n" );
-        }
-        else if( ulReceivedValue == mainVALUE_SENT_FROM_TIMER )
-        {
-            console_print( "Message received from software timer\n" );
-        }
-        else
-        {
-            console_print( "Unexpected message\n" );
-        }
-    }
-}
-/*-----------------------------------------------------------*/
-
-
-/*
-
-static void vTask1( void *pvParameters );
-static void vTask2( void *pvParameters );
+float processed_adc_values[BUFFER_SIZE];
 
 int main_app()
 {
-    static xQueueHandle xTestQueue;
-    xTestQueue = xQueueCreate( 10, ( unsigned portBASE_TYPE ) sizeof( unsigned short ) );
-    xTaskCreate( vTask1, "vTask1", configMINIMAL_STACK_SIZE, ( void * ) &xTestQueue, tskIDLE_PRIORITY, NULL );
-    xTaskCreate( vTask2, "vTask2", configMINIMAL_STACK_SIZE, ( void * ) &xTestQueue, tskIDLE_PRIORITY, NULL );
+    QueueHandle_t xQueue;
 
+    /* Initializing console */
+    console_init();
+    
+    /* Seed random numbers */
+    srand(time(0));
+
+    /* Creating queue */
+    console_print("Creating Queues... \n");
+    xQueue = xQueueCreate(BUFFER_SIZE, BUFFER_SIZE);
+    
+    if (xQueue == NULL)
+    {
+        console_print("Failed on create queue (memory), the program has stopped. Ctrl + C to finish. \n"); 
+        for (;;);
+    } else
+    {
+        /* Setting name to Queue */
+        vQueueAddToRegistry( xQueue, "Queue-01" );
+        console_print("Queue created... \n");
+    }
+    
+    /* Creating tasks */
+    xTaskCreate(prvADCRead,                      /* Task Function */
+                "ADCRead",                       /* Name of task (for debugging propose only) */
+                configMINIMAL_STACK_SIZE * 10,   /* Memory Stack */
+                xQueue,                          /* Used to pass a parameter to the task */
+                prioADCRead,                     /* Priority of Task */
+                &xHandleADCRead);                /* Microcontroller use a Task Handle (optional on Linux) */
+
+    xTaskCreate(prvProcessing,                   /* Task Function */
+                "Processing",                    /* Name of task (for debugging propose only) */
+                configMINIMAL_STACK_SIZE * 10,   /* Memory Stack */
+                xQueue,                          /* Used to pass a parameter to the task */
+                prioProcessing,                  /* Priority of Task */
+                &xHandleProcessing);             /* Microcontroller use a Task Handle (optional on Linux) */
+
+    xTaskCreate(prvSerialInterface,              /* Task Function */
+                "SerialInterface",               /* Name of task (for debugging propose only) */
+                configMINIMAL_STACK_SIZE * 10,   /* Memory Stack */
+                (void *)1,                       /* Used to pass a parameter to the task */
+                prioSerialInterface,             /* Priority of Task */
+                &xHandleSerialInterface);        /* Microcontroller use a Task Handle (optional on Linux) */
+
+    xTaskCreate(prvStats,                        /* Task Function */
+                "Stats",                         /* Name of task (for debugging propose only) */
+                configMINIMAL_STACK_SIZE * 10,   /* Memory Stack */
+                (void *)1,                       /* Used to pass a parameter to the task */
+                prioStats,                       /* Priority of Task */
+                &xHandleStats);                  /* Microcontroller use a Task Handle (optional on Linux) */
+
+    console_print("Starting scheduling, use Ctrl + C on any moment to finish ... \n");
+
+    /* Initializing Scheduler */
     vTaskStartScheduler();
-    return 1;
+
+    console_print("Failed to start the scheduler. Ctrl + C to finish. \n");
+    for(;;);
 }
 
-static void vTask1( void *pvParameters )
+static void prvADCRead(void *pvParameters)
 {
-    unsigned short usValue = 0, usLoop;
-    xQueueHandle *pxQueue;
-    const unsigned short usNumToProduce = 3;
-    short sError = pdFALSE;
+    TickType_t xLastWakeTime;
+    const TickType_t xFrequency = pTaskADCRead;
+    xLastWakeTime = xTaskGetTickCount();
 
-    pxQueue = ( xQueueHandle * ) pvParameters;
+    /* Queue variables */
+    QueueHandle_t xQueue = NULL;
 
-    for( ;; )
-    {       
-        for( usLoop = 0; usLoop < usNumToProduce; ++usLoop )
-        {
-            // Send an incrementing number on the queue without blocking.
-            printf("Task1 will send: %d\r\n", usValue);
-            if( xQueueSendToBack( *pxQueue, ( void * ) &usValue, ( portTickType ) 0 ) != pdPASS )
-            {
-                sError = pdTRUE;
-            }
-            else
-            {
-                ++usValue;
-            }
+    /* Struct message for queue */
+    uint8_t raw_adc_values[BUFFER_SIZE];
+    uint32_t raw_current_position = 0;
+
+    xQueue = (QueueHandle_t) pvParameters; // Restoring xQueue from higher context. 
+
+    /* Checking parameter passed to task */
+    configASSERT(xQueue != NULL);
+
+    console_print("\n******* %s STATS *******", pcTaskGetName(xHandleADCRead));
+    console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleADCRead));
+    console_print("\n Queue Name: %s", pcQueueGetName(xQueue));
+    console_print("\n Queue Space Used: %d", uxQueueMessagesWaiting(xQueue));
+    console_print("\n Queue Space Avaliable: %d", uxQueueSpacesAvailable(xQueue));
+    console_print("\n******************************\n\n");
+
+    for (;;)
+    {
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        /*
+        console_print("\n\n");
+        console_print("[ADCRead] running at %lld ms after vTaskStartScheduler() called. \n", pdTICKS_TO_MS(xTaskGetTickCount()));
+        */
+        
+        /* Read ADC value - 10 bits resolution is considered */
+        raw_adc_values[raw_current_position] = rand() % 1023;
+        
+        /*
+        console_print("-Sending- ");
+        console_print(" Message ID : [%d]", raw_current_position);
+        console_print(" ADC value  : [%d]", raw_adc_values[raw_current_position]);
+        */
+
+        /* Send the message */
+        if(xQueueSend(xQueue, ( void * ) &raw_adc_values, pdMS_TO_TICKS(0)) == pdTRUE && raw_current_position < BUFFER_SIZE){
+            raw_current_position++;
+        } else {
+            console_print("\n-ADC vector is full-\n");            
+            vTaskSuspend( xHandleADCRead );
+            raw_current_position = 0;
         }
-        vTaskDelay( 2000 );
     }
 }
-static void vTask2( void *pvParameters )
+
+static void prvProcessing(void *pvParameters)
 {
-    unsigned short usData = 0;
-    xQueueHandle *pxQueue;
+    TickType_t xLastWakeTime;
+    const TickType_t xFrequency = pTaskADCProc;
 
-    pxQueue = ( xQueueHandle * ) pvParameters;
+    /* Queue variables */
+    QueueHandle_t xQueue = NULL;
+    uint8_t received_adc_values[BUFFER_SIZE];
+    uint32_t proc_current_position = 0;
+        
+    xQueue = (QueueHandle_t) pvParameters; // Restoring xQueue from higher context.
+        
+    /* Checking parameter passed to  task */
+    configASSERT(xQueue != NULL);
 
-    for( ;; )
-    {       
-        while( uxQueueMessagesWaiting( *pxQueue ) )
-        {
-            if( xQueueReceive( *pxQueue, &usData, ( portTickType ) 0 ) == pdPASS )
-            {
-                printf("Task2 received:%d\r\n", usData);
-            }
+    console_print("\n******* %s STATS *******", pcTaskGetName(xHandleProcessing));
+    console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleProcessing));
+    console_print("\n Queue Name: %s", pcQueueGetName(xQueue));
+    console_print("\n Queue Space Used: %d", uxQueueMessagesWaiting(xQueue));
+    console_print("\n Queue Space Avaliable: %d", uxQueueSpacesAvailable(xQueue));
+    console_print("\n******************************\n\n");
+
+    for (;;)
+    {
+        xLastWakeTime = xTaskGetTickCount();
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
+        /*
+        console_print("\n\n");
+        console_print("[Processing] running at %lld ms after vTaskStartScheduler() called. \n", pdTICKS_TO_MS(xTaskGetTickCount()));
+        */
+
+        if(xQueueReceive( xQueue,( void * ) &received_adc_values, pdMS_TO_TICKS(0)) == pdTRUE){
+            /*
+            console_print("-Received- ");
+            console_print(" Message ID : [%d]", proc_current_position);
+            console_print(" ADC value : [%d]", received_adc_values[proc_current_position]);
+            */
+            
+            processed_adc_values[proc_current_position] = received_adc_values[proc_current_position] * PI;
+            /* console_print(" Processed value : [%.2f]", processed_adc_values[proc_current_position]); */
+            proc_current_position++;
+        } else {
+            console_print("-All ADC values were processed- ");
+            proc_current_position = 0;
+            vTaskSuspend( xHandleProcessing );
         }
-        vTaskDelay( 5000 );
     }
 }
 
-*/
+void prvSerialInterface(void *pvParameters)
+{
+    char msg[20];
+    TickType_t xLastWakeTime;
+    const TickType_t xFrequency = pTaskSerialInterface;
+
+    console_print("\n******* %s STATS *******", pcTaskGetName(xHandleSerialInterface));
+    console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleSerialInterface));
+    console_print("\n******************************\n\n");
+
+    for (;;) 
+    {
+
+        xLastWakeTime = xTaskGetTickCount();
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
+        gets( msg );
+
+        if(strcmp(msg,"obter") == 0) 
+        {
+            console_print("[ ");
+
+            for(int loop = 0; loop < BUFFER_SIZE; loop++)
+              console_print("%.2f ", processed_adc_values[loop]);
+
+            console_print("]\n\n");
+            memset(msg, 0, sizeof(msg));
+        }
+        else if (strcmp(msg,"zerar") == 0) 
+        {
+            vTaskSuspend( xHandleADCRead );
+            vTaskResume( xHandleADCRead );
+
+            vTaskSuspend( xHandleProcessing );
+            vTaskResume( xHandleProcessing );
+
+            memset(msg, 0, sizeof(msg));
+            memset(processed_adc_values, 0, sizeof(processed_adc_values));
+        }
+    }
+}
+
+void prvStats(void *pvParameters)
+{
+    char msg[256];
+    TickType_t xLastWakeTime;
+    const TickType_t xFrequency = pTaskStats;
+    xLastWakeTime = xTaskGetTickCount();
+
+    console_print("\n******* %s STATS *******", pcTaskGetName(xHandleStats));
+    console_print("\n Task Priority: %d", uxTaskPriorityGet(xHandleStats));
+    console_print("\n******************************\n\n");
+ 
+    for (;;) 
+    {
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        vTaskGetRunTimeStats( ( char * ) msg );
+        // console_print("\n\nStats: %s\n", msg);
+    }
+}
