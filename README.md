@@ -1,6 +1,6 @@
-## FreeRTOS project for 01320
+## FreeRTOS project - Practical test
 
-This branch contains the software presented ...
+This branch contains the software presented to the practical test of process 01320. The application is programmed in C language running the [FreeRTOS simulator for POSIX/Linux](https://www.freertos.org/FreeRTOS-simulator-for-Linux.html).
 
 #### Folders structure
 
@@ -62,7 +62,49 @@ $ ./build/main_app
 Expected output:
 
 ```sh
-AAAAAH
+Starting main application
+
+Creating Queues... 
+Queue created... 
+Starting scheduling, use Ctrl + C on any moment to finish ... 
+
+******* ADCRead STATS *******
+ Task Priority: 4
+ Queue Name: Queue-01
+ Queue Space Used: 0
+ Queue Space Avaliable: 1000
+******************************
+
+******* Processing STATS *******
+ Task Priority: 3
+ Queue Name: Queue-01
+ Queue Space Used: 0
+ Queue Space Avaliable: 1000
+******************************
+
+******* SerialInter STATS *******
+ Task Priority: 3
+******************************
+
+******* Stats STATS *******
+ Task Priority: 3
+******************************
+
+...
+```
+
+#### Interacting with the application
+
+To verify the processed ADC readings enter the following command on the serial interface:
+
+```sh
+obter
+```
+
+To clear the buffers, type:
+
+```sh
+zerar
 ```
 
 #### Updating the code
